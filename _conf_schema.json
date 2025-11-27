@@ -1,0 +1,24 @@
+{
+  "enabled": {
+    "description": "是否开启偷取表情包",
+    "type": "bool",
+    "default": true
+  },
+  "auto_send": {
+    "description": "是否自动发送合适的表情包",
+    "type": "bool",
+    "default": true
+  },
+  "vision_provider_id": {
+    "description": "视觉模型 Provider（用于图片分类）",
+    "type": "string",
+    "hint": "选择支持图片输入的提供商 ID（如 4o/Claude/Gemini Vision 等）",
+    "_special": "select_provider"
+  },
+  "text_provider_id": {
+    "description": "文本模型 Provider（用于文本情绪判断）",
+    "type": "string",
+    "hint": "选择主回复/文本分析的提供商 ID",
+    "_special": "select_provider"
+  }
+}
