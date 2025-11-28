@@ -1,5 +1,5 @@
 name: astrbot_plugin_stealer
-display_name: 表情包偷取与发送
+display_name: 表情包小偷
 desc: 自动偷取并分类表情包，在合适时机发送
 version: v1.0.0
 author: Coward332

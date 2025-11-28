@@ -12,7 +12,7 @@
   "vision_provider_id": {
     "description": "视觉模型 Provider（用于图片分类）",
     "type": "string",
-    "hint": "选择支持图片输入的提供商 ID（如 4o/Claude/Gemini Vision 等）",
+    "hint": "选择支持图片输入的提供商 ID（如 Gemini,豆包,qwen vl 等）",
     "_special": "select_provider"
   },
   "text_provider_id": {
@@ -20,5 +20,46 @@
     "type": "string",
     "hint": "选择主回复/文本分析的提供商 ID",
     "_special": "select_provider"
+  },
+  "backend_tag": {
+    "description": "后台标识（用于在索引中标注来源）",
+    "type": "string",
+    "hint": "例如 emoji_stealer，用于识别由本插件偷取的表情包",
+    "default": "emoji_stealer"
+  },
+  "emoji_chance": {
+    "description": "Planner 触发表情动作的基础概率",
+    "type": "float",
+    "default": 0.4
+  },
+  "max_reg_num": {
+    "description": "允许注册的最大表情数量",
+    "type": "int",
+    "default": 100
+  },
+  "do_replace": {
+    "description": "达到上限时是否替换旧表情",
+    "type": "bool",
+    "default": true
+  },
+  "check_interval": {
+    "description": "扫描/清理/注册的轮询周期（分钟）",
+    "type": "int",
+    "default": 10
+  },
+  "steal_emoji": {
+    "description": "允许自动从 data/emoji 注册新表情",
+    "type": "bool",
+    "default": true
+  },
+  "content_filtration": {
+    "description": "是否开启内容审核",
+    "type": "bool",
+    "default": false
+  },
+  "filtration_prompt": {
+    "description": "审核准则提示词",
+    "type": "string",
+    "default": "符合公序良俗"
   }
 }
