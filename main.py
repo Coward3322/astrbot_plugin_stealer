@@ -12,8 +12,7 @@ from pathlib import Path
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Image, Plain
-from astrbot.api.star import Context, Star, register
-from astrbot.core.star.star_tools import StarTools
+from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 try:
@@ -32,6 +31,126 @@ class StealerPlugin(Star):
     - 使用当前会话的多模态模型进行情绪分类与标签生成
     - 建立分类索引，支持自动与手动在合适时机发送表情包
     """
+    
+    # 常量定义
+    BACKEND_TAG = "emoji_stealer"
+    DEFAULT_FILTRATION_PROMPT = "符合公序良俗"
+    
+    # 提示词常量
+    IMAGE_FILTER_PROMPT = "根据以下审核准则判断图片是否符合: {filtration_rule}。只返回是或否。"
+    TEXT_EMOTION_PROMPT_TEMPLATE = """请基于这段文本的情绪选择一个最匹配的类别: {categories}。
+请使用&&emotion&&格式返回，例如&&happy&&、&&sad&&。
+只返回表情标签，不要添加任何其他内容。文本: {text}"""
+    
+    # 缓存清理阈值
+    _CACHE_MAX_SIZE = 1000  # 每个缓存的最大条目数
+    
+    # 情绪分类列表（英文标签）
+    CATEGORIES = [
+        "happy",
+        "neutral",
+        "sad",
+        "angry",
+        "shy",
+        "surprised",
+        "smirk",
+        "cry",
+        "confused",
+        "embarrassed",
+    ]
+    
+    # 情绪类别映射 - 类属性，避免重复创建
+    _EMOTION_MAPPING = {
+        # Chinese -> English canonical labels
+        "开心": "happy",
+        "高兴": "happy",
+        "快乐": "happy",
+        "喜悦": "happy",
+        "大笑": "happy",
+        "无语": "neutral",
+        "郁闷": "neutral",
+        "无奈": "neutral",
+        "平静": "neutral",
+        "一般般": "neutral",
+        "一般": "neutral",
+        "难过": "sad",
+        "伤心": "sad",
+        "悲伤": "sad",
+        "沮丧": "sad",
+        "生气": "angry",
+        "愤怒": "angry",
+        "暴怒": "angry",
+        "恼火": "angry",
+        "发火": "angry",
+        "害羞": "shy",
+        "腼腆": "shy",
+        "害臊": "shy",
+        "害羞脸红": "shy",
+        "脸红": "shy",
+        "羞涩": "shy",
+        "不好意思": "shy",
+        "震惊": "surprised",
+        "惊讶": "surprised",
+        "吓到": "surprised",
+        "吃惊": "surprised",
+        "惊呆": "surprised",
+        "奸笑": "smirk",
+        "坏笑": "smirk",
+        "窃笑": "smirk",
+        "偷笑": "smirk",
+        "调皮": "smirk",
+        "得意": "smirk",
+        "哭泣": "cry",
+        "哭": "cry",
+        "落泪": "cry",
+        "流泪": "cry",
+        "泪目": "cry",
+        "疑惑": "confused",
+        "迷茫": "confused",
+        "困惑": "confused",
+        "疑问": "confused",
+        "迷惑": "confused",
+        "尴尬": "embarrassed",
+        "难堪": "embarrassed",
+        "难为情": "embarrassed",
+        "窘迫": "embarrassed",
+        
+        # English aliases to canonical labels
+        "joy": "happy",
+        "joyful": "happy",
+        "smile": "happy",
+        "glad": "happy",
+        "cheerful": "happy",
+        "content": "happy",
+        "unhappy": "sad",
+        "upset": "sad",
+        "depressed": "sad",
+        "mad": "angry",
+        "annoyed": "angry",
+        "furious": "angry",
+        "bashful": "shy",
+        "timid": "shy",
+        "amazed": "surprised",
+        "astonished": "surprised",
+        "shocked": "surprised",
+        "shock": "surprised",
+        "grin": "smirk",
+        "sneer": "smirk",
+        "snicker": "smirk",
+        "giggle": "smirk",
+        "wink": "smirk",
+        "tearful": "cry",
+        "sobbing": "cry",
+        "crying": "cry",
+        "puzzled": "confused",
+        "bewildered": "confused",
+        "perplexed": "confused",
+        "baffled": "confused",
+        "flustered": "embarrassed",
+        "disconcerted": "embarrassed",
+        "ashamed": "embarrassed",
+    }
+    
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.enabled = True
@@ -42,125 +161,24 @@ class StealerPlugin(Star):
         # 语义对应关系：happy(开心)、neutral(无语/平静)、sad(伤心)、angry(愤怒)、
         # shy(害羞)、surprised(震惊)、smirk(奸笑/坏笑)、cry(哭泣)、
         # confused(疑惑)、embarrassed(尴尬)
-        self.categories = [
-            "happy",
-            "neutral",
-            "sad",
-            "angry",
-            "shy",
-            "surprised",
-            "smirk",
-            "cry",
-            "confused",
-            "embarrassed",
-        ]
+        self.categories = self.CATEGORIES
         self.index_path: Path | None = None
         self.config_path: Path | None = None
         self.vision_provider_id: str | None = None
         self.text_provider_id: str | None = None
         self.alias_path: Path | None = None
-        self.backend_tag: str = "emoji_stealer"
+        self.backend_tag: str = self.BACKEND_TAG
         self.emoji_chance: float = 0.4
         self.max_reg_num: int = 100
         self.do_replace: bool = True
         self.check_interval: int = 10
         self.steal_emoji: bool = True
         self.content_filtration: bool = False
-        self.filtration_prompt: str = "符合公序良俗"
+        self.filtration_prompt: str = self.DEFAULT_FILTRATION_PROMPT
         self._scanner_task: asyncio.Task | None = None
         
-        # 缓存清理阈值
-        self._CACHE_MAX_SIZE = 1000  # 每个缓存的最大条目数
-        
-        # 情绪类别映射 - 移到类属性避免重复创建
-        self._EMOTION_MAPPING = {
-            # Chinese -> English canonical labels
-            "开心": "happy",
-            "高兴": "happy",
-            "快乐": "happy",
-            "喜悦": "happy",
-            "大笑": "happy",
-            "无语": "neutral",
-            "郁闷": "neutral",
-            "无奈": "neutral",
-            "平静": "neutral",
-            "一般般": "neutral",
-            "一般": "neutral",
-            "难过": "sad",
-            "伤心": "sad",
-            "悲伤": "sad",
-            "沮丧": "sad",
-            "生气": "angry",
-            "愤怒": "angry",
-            "暴怒": "angry",
-            "恼火": "angry",
-            "发火": "angry",
-            "害羞": "shy",
-            "腼腆": "shy",
-            "害臊": "shy",
-            "害羞脸红": "shy",
-            "脸红": "shy",
-            "羞涩": "shy",
-            "不好意思": "shy",
-            "震惊": "surprised",
-            "惊讶": "surprised",
-            "吓到": "surprised",
-            "吃惊": "surprised",
-            "惊呆": "surprised",
-            "奸笑": "smirk",
-            "坏笑": "smirk",
-            "窃笑": "smirk",
-            "偷笑": "smirk",
-            "调皮": "smirk",
-            "得意": "smirk",
-            "哭泣": "cry",
-            "哭": "cry",
-            "落泪": "cry",
-            "流泪": "cry",
-            "泪目": "cry",
-            "疑惑": "confused",
-            "迷茫": "confused",
-            "困惑": "confused",
-            "疑问": "confused",
-            "迷惑": "confused",
-            "尴尬": "embarrassed",
-            "难堪": "embarrassed",
-            "难为情": "embarrassed",
-            "窘迫": "embarrassed",
-            
-            # English aliases to canonical labels
-            "joy": "happy",
-            "joyful": "happy",
-            "smile": "happy",
-            "glad": "happy",
-            "cheerful": "happy",
-            "content": "happy",
-            "unhappy": "sad",
-            "upset": "sad",
-            "depressed": "sad",
-            "mad": "angry",
-            "annoyed": "angry",
-            "furious": "angry",
-            "bashful": "shy",
-            "timid": "shy",
-            "amazed": "surprised",
-            "astonished": "surprised",
-            "shocked": "surprised",
-            "shock": "surprised",
-            "grin": "smirk",
-            "crying": "cry",
-            "weep": "cry",
-            "sorrow": "cry",
-            "puzzled": "confused",
-            "perplexed": "confused",
-            "abashed": "embarrassed",
-            "humiliated": "embarrassed",
-            "embarrassed": "embarrassed",
-            "confused": "confused",
-            "surprised": "surprised",
-            "smirk": "smirk",
-            "neutral": "neutral",
-        }
+        # 情绪类别映射引用（保留以保持向后兼容）
+        self._EMOTION_MAPPING = self.__class__._EMOTION_MAPPING
         self.desc_cache_path: Path | None = None
         self.emotion_cache_path: Path | None = None
         self._desc_cache: dict[str, str] = {}
@@ -172,12 +190,30 @@ class StealerPlugin(Star):
     def _update_config_from_dict(self, config_dict: dict):
         """从配置字典更新插件配置。"""
         try:
-            enabled = config_dict.get("enabled")
-            if isinstance(enabled, bool):
-                self.enabled = enabled
-            auto_send = config_dict.get("auto_send")
-            if isinstance(auto_send, bool):
-                self.auto_send = auto_send
+            # 配置字段映射表：键名 -> (属性名, 类型, 额外处理函数)
+            config_mapping = {
+                "enabled": ("enabled", bool, None),
+                "auto_send": ("auto_send", bool, None),
+                "emoji_chance": ("emoji_chance", (int, float), lambda x: float(x)),
+                "max_reg_num": ("max_reg_num", int, None),
+                "do_replace": ("do_replace", bool, None),
+                "check_interval": ("check_interval", int, None),
+                "steal_emoji": ("steal_emoji", bool, None),
+                "content_filtration": ("content_filtration", bool, None),
+                "filtration_prompt": ("filtration_prompt", str, lambda x: x if x else self.DEFAULT_FILTRATION_PROMPT),
+                "emoji_only": ("emoji_only", bool, None),
+            }
+            
+            # 处理普通配置项
+            for config_key, (attr_name, expected_type, processor) in config_mapping.items():
+                if config_key in config_dict:
+                    value = config_dict[config_key]
+                    if isinstance(value, expected_type):
+                        if processor:
+                            value = processor(value)
+                        setattr(self, attr_name, value)
+            
+            # 特殊处理categories（需要映射和去重）
             cats = config_dict.get("categories")
             if isinstance(cats, list) and cats:
                 # 兼容旧版本配置，将中文/旧标签映射为英文情绪标签，并移除已废弃分类
@@ -188,31 +224,6 @@ class StealerPlugin(Star):
                         mapped.append(norm)
                 if mapped:
                     self.categories = mapped
-
-            ec = config_dict.get("emoji_chance")
-            if isinstance(ec, (int, float)):
-                self.emoji_chance = float(ec)
-            mrn = config_dict.get("max_reg_num")
-            if isinstance(mrn, int):
-                self.max_reg_num = mrn
-            dr = config_dict.get("do_replace")
-            if isinstance(dr, bool):
-                self.do_replace = dr
-            ci = config_dict.get("check_interval")
-            if isinstance(ci, int):
-                self.check_interval = ci
-            se = config_dict.get("steal_emoji")
-            if isinstance(se, bool):
-                self.steal_emoji = se
-            cf = config_dict.get("content_filtration")
-            if isinstance(cf, bool):
-                self.content_filtration = cf
-            fp = config_dict.get("filtration_prompt")
-            if isinstance(fp, str) and fp:
-                self.filtration_prompt = fp
-            eo = config_dict.get("emoji_only")
-            if isinstance(eo, bool):
-                self.emoji_only = eo
         except Exception as e:
             logger.error(f"更新配置失败: {e}")
 
@@ -661,7 +672,7 @@ class StealerPlugin(Star):
             prov_id = await self._pick_vision_provider(event)
             if not prov_id:
                 return True
-            prompt = "根据以下审核准则判断图片是否符合: " + self.filtration_prompt + "。只返回是或否。"
+            prompt = self.IMAGE_FILTER_PROMPT.format(filtration_rule=self.filtration_prompt)
             resp = await self.context.llm_generate(
                 chat_provider_id=prov_id,
                 prompt=prompt,
@@ -722,9 +733,10 @@ class StealerPlugin(Star):
             
             # 使用插件原有的分类体系构建提示词，要求输出&&emotion&&格式
             categories_str = ", ".join(self.categories)
-            prompt = f"请基于这段文本的情绪选择一个最匹配的类别: {categories_str}。"
-            prompt += "请使用&&emotion&&格式返回，例如&&happy&&、&&sad&&。"
-            prompt += "只返回表情标签，不要添加任何其他内容。文本: " + text
+            prompt = self.TEXT_EMOTION_PROMPT_TEMPLATE.format(
+            categories=categories_str,
+            text=text
+        )
             
             if prov_id is None:
                 return ""
