@@ -42,6 +42,11 @@ class StealerPlugin(Star):
 请使用&&emotion&&格式返回，例如&&happy&&、&&sad&&。
 只返回表情标签，不要添加任何其他内容。文本: {text}"""
     
+    # 从外部文件加载的提示词
+    DESCRIPTION_PROMPT = ""
+    EMOTION_DETECTION_PROMPT = ""
+    CLASSIFICATION_PROMPT = ""
+    
     # 缓存清理阈值
     _CACHE_MAX_SIZE = 1000  # 每个缓存的最大条目数
     
@@ -59,111 +64,25 @@ class StealerPlugin(Star):
         "embarrassed",
     ]
     
-    # 情绪类别映射 - 类属性，避免重复创建
-    _EMOTION_MAPPING = {
-        # Chinese -> English canonical labels
-        "开心": "happy",
-        "高兴": "happy",
-        "快乐": "happy",
-        "喜悦": "happy",
-        "大笑": "happy",
-        "无语": "neutral",
-        "郁闷": "neutral",
-        "无奈": "neutral",
-        "平静": "neutral",
-        "一般般": "neutral",
-        "一般": "neutral",
-        "难过": "sad",
-        "伤心": "sad",
-        "悲伤": "sad",
-        "沮丧": "sad",
-        "生气": "angry",
-        "愤怒": "angry",
-        "暴怒": "angry",
-        "恼火": "angry",
-        "发火": "angry",
-        "害羞": "shy",
-        "腼腆": "shy",
-        "害臊": "shy",
-        "害羞脸红": "shy",
-        "脸红": "shy",
-        "羞涩": "shy",
-        "不好意思": "shy",
-        "震惊": "surprised",
-        "惊讶": "surprised",
-        "吓到": "surprised",
-        "吃惊": "surprised",
-        "惊呆": "surprised",
-        "奸笑": "smirk",
-        "坏笑": "smirk",
-        "窃笑": "smirk",
-        "偷笑": "smirk",
-        "调皮": "smirk",
-        "得意": "smirk",
-        "哭泣": "cry",
-        "哭": "cry",
-        "落泪": "cry",
-        "流泪": "cry",
-        "泪目": "cry",
-        "疑惑": "confused",
-        "迷茫": "confused",
-        "困惑": "confused",
-        "疑问": "confused",
-        "迷惑": "confused",
-        "尴尬": "embarrassed",
-        "难堪": "embarrassed",
-        "难为情": "embarrassed",
-        "窘迫": "embarrassed",
-        
-        # English aliases to canonical labels
-        "joy": "happy",
-        "joyful": "happy",
-        "smile": "happy",
-        "glad": "happy",
-        "cheerful": "happy",
-        "content": "happy",
-        "unhappy": "sad",
-        "upset": "sad",
-        "depressed": "sad",
-        "mad": "angry",
-        "annoyed": "angry",
-        "furious": "angry",
-        "bashful": "shy",
-        "timid": "shy",
-        "amazed": "surprised",
-        "astonished": "surprised",
-        "shocked": "surprised",
-        "shock": "surprised",
-        "grin": "smirk",
-        "sneer": "smirk",
-        "snicker": "smirk",
-        "giggle": "smirk",
-        "wink": "smirk",
-        "tearful": "cry",
-        "sobbing": "cry",
-        "crying": "cry",
-        "puzzled": "confused",
-        "bewildered": "confused",
-        "perplexed": "confused",
-        "baffled": "confused",
-        "flustered": "embarrassed",
-        "disconcerted": "embarrassed",
-        "ashamed": "embarrassed",
-    }
+    # 预先声明类属性，避免实例化时出现AttributeError
+    _EMOTION_MAPPING = {}
+    
+    # 情绪类别映射 - 实例属性，在 initialize 方法中从文件加载
     
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.enabled = True
+        self.config = config  # 保存配置参数
         self.auto_send = True
         self.base_dir: Path | None = None
-        self.plugin_config = config
+        # 情绪映射，在 initialize 方法中从文件加载
+        self._EMOTION_MAPPING = {}
         # 默认情绪分类（英文标签，避免字符兼容性问题）
         # 语义对应关系：happy(开心)、neutral(无语/平静)、sad(伤心)、angry(愤怒)、
-        # shy(害羞)、surprised(震惊)、smirk(奸笑/坏笑)、cry(哭泣)、
-        # confused(疑惑)、embarrassed(尴尬)
+        # shy(害羞)、surprised(惊讶)、smirk(坏笑)、cry(哭)、confused(疑惑)、
+        # embarrassed(尴尬)
         self.categories = self.CATEGORIES
         self.index_path: Path | None = None
-        self.config_path: Path | None = None
         self.vision_provider_id: str | None = None
         self.text_provider_id: str | None = None
         self.alias_path: Path | None = None
@@ -177,12 +96,21 @@ class StealerPlugin(Star):
         self.filtration_prompt: str = self.DEFAULT_FILTRATION_PROMPT
         self._scanner_task: asyncio.Task | None = None
         
-        # 情绪类别映射引用（保留以保持向后兼容）
-        self._EMOTION_MAPPING = self.__class__._EMOTION_MAPPING
+        # 情绪类别映射（将在initialize方法中加载）
+        self._EMOTION_MAPPING = {}
         self.desc_cache_path: Path | None = None
         self.emotion_cache_path: Path | None = None
         self._desc_cache: dict[str, str] = {}
         self._emotion_cache: dict[str, str] = {}
+        # 图片分类结果缓存
+        self.image_cache_path: Path | None = None
+        self._image_cache: dict[str, tuple[str, list[str], str, str]] = {}
+        # 文本分类结果缓存
+        self.text_cache_path: Path | None = None
+        self._text_cache: dict[str, str] = {}
+        # LLM 调用频率限制
+        self._last_llm_call_time: float = 0.0
+        self._llm_call_cooldown: float = 2.0  # 2秒冷却时间
         self.emoji_only: bool = True  # 仅偷取表情包开关
         
 
@@ -190,28 +118,27 @@ class StealerPlugin(Star):
     def _update_config_from_dict(self, config_dict: dict):
         """从配置字典更新插件配置。"""
         try:
-            # 配置字段映射表：键名 -> (属性名, 类型, 额外处理函数)
-            config_mapping = {
-                "enabled": ("enabled", bool, None),
-                "auto_send": ("auto_send", bool, None),
-                "emoji_chance": ("emoji_chance", (int, float), lambda x: float(x)),
-                "max_reg_num": ("max_reg_num", int, None),
-                "do_replace": ("do_replace", bool, None),
-                "check_interval": ("check_interval", int, None),
-                "steal_emoji": ("steal_emoji", bool, None),
-                "content_filtration": ("content_filtration", bool, None),
-                "filtration_prompt": ("filtration_prompt", str, lambda x: x if x else self.DEFAULT_FILTRATION_PROMPT),
-                "emoji_only": ("emoji_only", bool, None),
-            }
-            
-            # 处理普通配置项
-            for config_key, (attr_name, expected_type, processor) in config_mapping.items():
-                if config_key in config_dict:
-                    value = config_dict[config_key]
-                    if isinstance(value, expected_type):
-                        if processor:
-                            value = processor(value)
-                        setattr(self, attr_name, value)
+            # 直接处理每个配置项，提高IDE类型推断和代码可读性
+            if "enabled" in config_dict and isinstance(config_dict["enabled"], bool):
+                self.enabled = config_dict["enabled"]
+            if "auto_send" in config_dict and isinstance(config_dict["auto_send"], bool):
+                self.auto_send = config_dict["auto_send"]
+            if "emoji_chance" in config_dict and isinstance(config_dict["emoji_chance"], (int, float)):
+                self.emoji_chance = float(config_dict["emoji_chance"])
+            if "max_reg_num" in config_dict and isinstance(config_dict["max_reg_num"], int):
+                self.max_reg_num = config_dict["max_reg_num"]
+            if "do_replace" in config_dict and isinstance(config_dict["do_replace"], bool):
+                self.do_replace = config_dict["do_replace"]
+            if "check_interval" in config_dict and isinstance(config_dict["check_interval"], int):
+                self.check_interval = config_dict["check_interval"]
+            if "steal_emoji" in config_dict and isinstance(config_dict["steal_emoji"], bool):
+                self.steal_emoji = config_dict["steal_emoji"]
+            if "content_filtration" in config_dict and isinstance(config_dict["content_filtration"], bool):
+                self.content_filtration = config_dict["content_filtration"]
+            if "filtration_prompt" in config_dict and isinstance(config_dict["filtration_prompt"], str):
+                self.filtration_prompt = config_dict["filtration_prompt"] if config_dict["filtration_prompt"] else self.DEFAULT_FILTRATION_PROMPT
+            if "emoji_only" in config_dict and isinstance(config_dict["emoji_only"], bool):
+                self.emoji_only = config_dict["emoji_only"]
             
             # 特殊处理categories（需要映射和去重）
             cats = config_dict.get("categories")
@@ -230,7 +157,7 @@ class StealerPlugin(Star):
     async def initialize(self):
         """初始化插件数据目录与配置。
 
-        创建 raw、categories 目录并加载/写入 config 与 index 文件。
+        创建 raw、categories 目录并加载配置。
         """
         self.base_dir = StarTools.get_data_dir()
         (self.base_dir / "raw").mkdir(parents=True, exist_ok=True)
@@ -238,18 +165,36 @@ class StealerPlugin(Star):
         for c in self.categories:
             (self.base_dir / "categories" / c).mkdir(parents=True, exist_ok=True)
         self.index_path = self.base_dir / "index.json"
-        self.config_path = self.base_dir / "config.json"
         self.alias_path = self.base_dir / "aliases.json"
         self.desc_cache_path = self.base_dir / "desc_cache.json"
         self.emotion_cache_path = self.base_dir / "emotion_cache.json"
-        if self.config_path.exists():
-            try:
-                cfg = json.loads(self.config_path.read_text(encoding="utf-8"))
-                self._update_config_from_dict(cfg)
-            except Exception as e:
-                logger.error(f"加载配置失败: {e}")
-        else:
-            await self._persist_config()
+        self.image_cache_path = self.base_dir / "image_cache.json"
+        self.text_cache_path = self.base_dir / "text_cache.json"
+        
+        # 加载情绪映射文件
+        mapping_file_path = Path(__file__).parent / "emotion_mapping.json"
+        try:
+            with open(mapping_file_path, 'r', encoding='utf-8') as f:
+                self._EMOTION_MAPPING = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load emotion mapping: {e}")
+            # 加载失败时使用空映射作为降级方案
+            self._EMOTION_MAPPING = {}
+        
+        # 加载提示词文件
+        prompts_file_path = Path(__file__).parent / "prompts.json"
+        try:
+            with open(prompts_file_path, 'r', encoding='utf-8') as f:
+                prompts = json.load(f)
+            self.DESCRIPTION_PROMPT = prompts.get("DESCRIPTION_PROMPT", "")
+            self.EMOTION_DETECTION_PROMPT = prompts.get("EMOTION_DETECTION_PROMPT", "")
+            self.CLASSIFICATION_PROMPT = prompts.get("CLASSIFICATION_PROMPT", "")
+        except Exception as e:
+            logger.error(f"Failed to load prompts file: {e}")
+            # 加载失败时使用默认提示词
+            self.DESCRIPTION_PROMPT = "请为这张表情包图片生成简洁、准确、具体的详细描述，10-30字左右，不要包含无关信息。描述要求：1. 明确说明图片的主要内容（人物/动物/物体/风格）2. 详细描述表情特征（如嘴角上扬、眼睛弯成月牙、脸红、流泪、皱眉、瞪眼等）3. 准确写出角色的具体情绪（必须从以下列表选择：开心、害羞、哭泣、愤怒、无语、震惊、困惑、尴尬、奸笑、平静）4. 避免使用模糊词汇如\"搞怪\"、\"有趣\"、\"其他\"等，必须选择具体情绪词例如：\"一个卡通猫角色，眼睛弯成月牙，嘴角上扬，露出开心的笑容\""
+            self.EMOTION_DETECTION_PROMPT = "Based on the following description, choose ONE emotion word in English from this exact list: happy, neutral, sad, angry, shy, surprised, smirk, cry, confused, embarrassed. You must select the emotion that best matches the overall feeling described. If multiple emotions are mentioned, choose the most prominent one. Only return the single emotion word, with no other text, punctuation, or explanations. Examples: - Description: A cartoon cat with eyes curved into crescents and an upward smile, looking happy Response: happy - Description: An anime girl with red cheeks, looking down shyly Response: shy - Description: A character with tears streaming down their face, looking sad Response: cry Description: "
+            self.CLASSIFICATION_PROMPT = "你是专业的表情包情绪分类师，请严格按照以下要求处理：1. 观察图片内容，根据表情、动作、氛围判断主要情绪2. 从以下英文情绪标签中选择唯一最匹配的：happy, neutral, sad, angry, shy, surprised, smirk, cry, confused, embarrassed3. 同时提取2-5个能描述图片特征的关键词标签（如cute, smile, blush, tear, angry等）4. 必须返回严格的JSON格式，包含category和tags两个字段5. category字段为选择的情绪标签，tags字段为提取的关键词数组6. 如果是二次元/动漫/卡通角色，必须根据表情实际情绪分类7. 不要添加任何JSON之外的内容，确保JSON可以被程序直接解析错误示例（不要这样做）：- \"我认为这张图片的情绪是happy，标签有cute, smile\"- {category:happy, tags:[\"cute\",\"smile\"]}正确示例：- {\"category\":\"happy\",\"tags\":[\"cute\",\"smile\",\"cartoon\"]}- {\"category\":\"shy\",\"tags\":[\"blush\",\"anime\",\"girl\"]}- {\"category\":\"cry\",\"tags\":[\"tear\",\"sad\",\"cartoon\"]}"
         if not self.index_path.exists():
             self.index_path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
         if self.alias_path and not self.alias_path.exists():
@@ -263,24 +208,52 @@ class StealerPlugin(Star):
         else:
             if self.desc_cache_path:
                 self.desc_cache_path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
+        if self.text_cache_path and not self.text_cache_path.exists():
+            if self.text_cache_path:
+                self.text_cache_path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
         if self.emotion_cache_path and self.emotion_cache_path.exists():
             try:
                 self._emotion_cache = json.loads(self.emotion_cache_path.read_text(encoding="utf-8"))
             except Exception:
                 self._emotion_cache = {}
+        if self.text_cache_path and self.text_cache_path.exists():
+            try:
+                self._text_cache = json.loads(self.text_cache_path.read_text(encoding="utf-8"))
+            except Exception:
+                self._text_cache = {}
         else:
             if self.emotion_cache_path:
                 self.emotion_cache_path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
+        
+        # 加载图片分类缓存
+        if self.image_cache_path and self.image_cache_path.exists():
+            try:
+                cache_data = json.loads(self.image_cache_path.read_text(encoding="utf-8"))
+                # 将缓存数据转换为正确的格式
+                self._image_cache = {}
+                for hash_key, data in cache_data.items():
+                    if isinstance(data, list) and len(data) >= 4:
+                        category = str(data[0])
+                        tags = list(data[1])
+                        desc = str(data[2])
+                        emotion = str(data[3])
+                        self._image_cache[hash_key] = (category, tags, desc, emotion)
+            except Exception as e:
+                logger.error(f"加载图片分类缓存失败: {e}")
+                self._image_cache = {}
+        else:
+            if self.image_cache_path:
+                self.image_cache_path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
 
         # 移除了侵入式的人格修改功能，使用非侵入式的表情标签提取方式
 
         # 从插件配置读取模型选择
         try:
-            if self.plugin_config:
-                self._update_config_from_dict(self.plugin_config)
-                # 读取模型ID配置（仅在plugin_config中可用）
-                vpid = self.plugin_config.get("vision_provider_id")
-                tpid = self.plugin_config.get("text_provider_id")
+            if self.config:
+                self._update_config_from_dict(self.config)
+                # 读取模型ID配置（仅在config中可用）
+                vpid = self.config.get("vision_provider_id")
+                tpid = self.config.get("text_provider_id")
                 self.vision_provider_id = str(vpid) if vpid else None
                 self.text_provider_id = str(tpid) if tpid else None
         except Exception as e:
@@ -301,9 +274,9 @@ class StealerPlugin(Star):
 
         return
 
-    async def _persist_config(self):
-        """持久化插件运行配置到配置文件。"""
-        if not self.config_path:
+    def _persist_config(self):
+        """持久化插件运行配置到AstrBotConfig。"""
+        if not self.config:
             return
             
         payload = {
@@ -319,15 +292,25 @@ class StealerPlugin(Star):
             "content_filtration": self.content_filtration,
             "filtration_prompt": self.filtration_prompt,
             "emoji_only": self.emoji_only,
+            "vision_provider_id": self.vision_provider_id,
+            "text_provider_id": self.text_provider_id
         }
         
         try:
-            def sync_persist_config():
-                self.config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            
-            await asyncio.to_thread(sync_persist_config)
+            # 使用AstrBotConfig的机制保存配置
+            for key, value in payload.items():
+                self.config[key] = value
         except Exception as e:
-            logger.error(f"保存配置文件失败: {e}")
+            logger.error(f"保存配置失败: {e}")
+
+    def _sync_save_text_cache(self):
+        """同步保存文本分类缓存到文件。"""
+        try:
+            if self.text_cache_path:
+                with open(self.text_cache_path, "w", encoding="utf-8") as f:
+                    json.dump(self._text_cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存文本分类缓存失败: {e}")
 
     async def _load_index(self) -> dict:
         """加载分类索引文件。
@@ -482,6 +465,13 @@ class StealerPlugin(Star):
         """
         try:
             h = await self._compute_hash(file_path)
+            
+            # 检查图片分类结果缓存
+            if h and h in self._image_cache:
+                cached_result = self._image_cache[h]
+                if cached_result and len(cached_result) >= 4:
+                    logger.debug(f"使用图片分类缓存结果: {h}")
+                    return cached_result
 
             # 获取视觉模型
             prov_id = await self._pick_vision_provider(event)
@@ -528,18 +518,9 @@ class StealerPlugin(Star):
 
             desc = self._desc_cache.get(h)
             if not desc:
-                prompt1 = (
-                    "请为这张表情包图片生成简洁、准确、具体的详细描述，10-30字左右，不要包含无关信息。"
-                    "描述要求："
-                    "1. 明确说明图片的主要内容（人物/动物/物体/风格）"
-                    "2. 详细描述表情特征（如嘴角上扬、眼睛弯成月牙、脸红、流泪、皱眉、瞪眼等）"
-                    "3. 准确写出角色的具体情绪（必须从以下列表选择：开心、害羞、哭泣、愤怒、无语、震惊、困惑、尴尬、奸笑、平静）"
-                    "4. 避免使用模糊词汇如“搞怪”、“有趣”、“其他”等，必须选择具体情绪词"
-                    "例如：\"一个卡通猫角色，眼睛弯成月牙，嘴角上扬，露出开心的笑容\""
-                )
                 resp1 = await self.context.llm_generate(
                     chat_provider_id=prov_id,
-                    prompt=prompt1,
+                    prompt=self.DESCRIPTION_PROMPT,
                     image_urls=[f"file:///{os.path.abspath(file_path)}"],
                 )
                 desc = resp1.completion_text.strip()
@@ -565,21 +546,7 @@ class StealerPlugin(Star):
                 prov_text = await self._pick_text_provider(event)
                 if not prov_text:
                     prov_text = prov_id
-                prompt2 = (
-                    "Based on the following description, choose ONE emotion word in English "
-                    "from this exact list: happy, neutral, sad, angry, shy, surprised, smirk, cry, confused, embarrassed. "
-                    "You must select the emotion that best matches the overall feeling described. "
-                    "If multiple emotions are mentioned, choose the most prominent one. "
-                    "Only return the single emotion word, with no other text, punctuation, or explanations. "
-                    "Examples:"
-                    "- Description: A cartoon cat with eyes curved into crescents and an upward smile, looking happy"
-                    "  Response: happy"
-                    "- Description: An anime girl with red cheeks, looking down shyly"
-                    "  Response: shy"
-                    "- Description: A character with tears streaming down their face, looking sad"
-                    "  Response: cry"
-                    "Description: " + desc
-                )
+                prompt2 = self.EMOTION_DETECTION_PROMPT.format(desc=desc)
                 resp2 = await self.context.llm_generate(chat_provider_id=prov_text, prompt=prompt2)
                 emotion = resp2.completion_text.strip()
                 if emotion:
@@ -600,23 +567,7 @@ class StealerPlugin(Star):
                          except Exception as e:
                              logger.error(f"保存情绪缓存失败: {e}")
             
-            prompt = (
-                '你是专业的表情包情绪分类师，请严格按照以下要求处理：'
-                '1. 观察图片内容，根据表情、动作、氛围判断主要情绪'
-                '2. 从以下英文情绪标签中选择唯一最匹配的：happy, neutral, sad, angry, shy, surprised, smirk, cry, confused, embarrassed'
-                '3. 同时提取2-5个能描述图片特征的关键词标签（如cute, smile, blush, tear, angry等）'
-                '4. 必须返回严格的JSON格式，包含category和tags两个字段'
-                '5. category字段为选择的情绪标签，tags字段为提取的关键词数组'
-                '6. 如果是二次元/动漫/卡通角色，必须根据表情实际情绪分类'
-                '7. 不要添加任何JSON之外的内容，确保JSON可以被程序直接解析'
-                '错误示例（不要这样做）：'
-                '- \"我认为这张图片的情绪是happy，标签有cute, smile\"'
-                '- {category:happy, tags:[\"cute\",\"smile\"]}'
-                '正确示例：'
-                '- {\"category\":\"happy\",\"tags\":[\"cute\",\"smile\",\"cartoon\"]}'
-                '- {\"category\":\"shy\",\"tags\":[\"blush\",\"anime\",\"girl\"]}'
-                '- {\"category\":\"cry\",\"tags\":[\"tear\",\"sad\",\"cartoon\"]}'
-            )
+            prompt = self.CLASSIFICATION_PROMPT
             resp = await self.context.llm_generate(
                 chat_provider_id=prov_id,
                 prompt=prompt,
@@ -640,6 +591,38 @@ class StealerPlugin(Star):
                         break
             emo = self._normalize_category(emotion) if emotion else cat
             cat = self._normalize_category(cat)
+            
+            # 保存分类结果到缓存
+            if h:
+                result = (cat, tags, desc or "", emo)
+                self._image_cache[h] = result
+                
+                # 清理缓存，保持在阈值以下
+                if len(self._image_cache) > self._CACHE_MAX_SIZE:
+                    # 只保留最新的条目
+                    keys_to_keep = list(self._image_cache.keys())[-self._CACHE_MAX_SIZE:]
+                    self._image_cache = {k: self._image_cache[k] for k in keys_to_keep}
+                
+                # 异步保存缓存到文件
+                if self.image_cache_path:
+                    try:
+                        def sync_save_image_cache():
+                            # 将缓存数据转换为可序列化的格式
+                            cache_data = {}
+                            for hash_key, data in self._image_cache.items():
+                                if isinstance(data, tuple) and len(data) >= 4:
+                                    cache_data[hash_key] = [
+                                        data[0],  # category
+                                        data[1],  # tags
+                                        data[2],  # desc
+                                        data[3]   # emotion
+                                    ]
+                            self.image_cache_path.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+                        
+                        await asyncio.to_thread(sync_save_image_cache)
+                    except Exception as e:
+                        logger.error(f"保存图片分类缓存失败: {e}")
+            
             return cat, tags, desc or "", emo
         except Exception as e:
             logger.error(f"视觉分类失败: {e}")
@@ -729,14 +712,26 @@ class StealerPlugin(Star):
     async def _classify_text_category(self, event: AstrMessageEvent, text: str) -> str:
         """调用文本模型判断文本情绪并映射到插件分类。"""
         try:
+            # 检查缓存
+            import hashlib
+            text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
+            if text_hash in self._text_cache:
+                return self._text_cache[text_hash]
+            
+            # 检查频率限制
+            current_time = asyncio.get_event_loop().time()
+            if current_time - self._last_llm_call_time < self._llm_call_cooldown:
+                # 冷却时间未到，返回空
+                return ""
+            
             prov_id = await self._pick_text_provider(event)
             
             # 使用插件原有的分类体系构建提示词，要求输出&&emotion&&格式
             categories_str = ", ".join(self.categories)
             prompt = self.TEXT_EMOTION_PROMPT_TEMPLATE.format(
-            categories=categories_str,
-            text=text
-        )
+                categories=categories_str,
+                text=text
+            )
             
             if prov_id is None:
                 return ""
@@ -755,7 +750,22 @@ class StealerPlugin(Star):
             
             # 使用插件内置的_normalize_category方法进行类别映射
             normalized_category = self._normalize_category(emotion)
-            return normalized_category if normalized_category in self.categories else ""
+            result = normalized_category if normalized_category in self.categories else ""
+            
+            # 更新缓存
+            self._text_cache[text_hash] = result
+            # 限制缓存大小
+            if len(self._text_cache) > 1000:  # 保留最多1000条缓存
+                keys_to_remove = list(self._text_cache.keys())[:len(self._text_cache) - 1000]
+                for key in keys_to_remove:
+                    del self._text_cache[key]
+            # 异步保存缓存
+            await asyncio.to_thread(self._sync_save_text_cache)
+            
+            # 更新最后调用时间
+            self._last_llm_call_time = current_time
+            
+            return result
             
         except Exception as e:
             logger.error(f"文本情绪分类失败: {e}")
@@ -884,6 +894,7 @@ class StealerPlugin(Star):
             return None
         return await self.context.get_current_chat_provider_id(event.unified_msg_origin)
 
+    @filter.event_message_type(filter.EventMessageType.ALL)
     @filter.platform_adapter_type(filter.PlatformAdapterType.ALL)
     async def on_message(self, event: AstrMessageEvent, *args, **kwargs):
         """消息监听：偷取消息中的图片并分类存储。"""
@@ -933,7 +944,8 @@ class StealerPlugin(Star):
                 if not self.steal_emoji:
                     continue
                 await self._scan_register_emoji_folder()
-            except Exception:
+            except Exception as e:
+                logger.error(f"表情包扫描循环出错: {e}")
                 continue
 
     async def _scan_register_emoji_folder(self):
@@ -1106,52 +1118,28 @@ class StealerPlugin(Star):
     async def meme_on(self, event: AstrMessageEvent):
         """开启偷表情包功能。"""
         self.enabled = True
-        try:
-            if self.plugin_config is not None:
-                self.plugin_config["enabled"] = True
-                self.plugin_config.save_config()
-        except Exception as e:
-            logger.error(f"保存插件配置失败: {e}")
-        await self._persist_config()
+        self._persist_config()
         yield event.plain_result("已开启偷表情包")
 
     @meme.command("off")
     async def meme_off(self, event: AstrMessageEvent):
         """关闭偷表情包功能。"""
         self.enabled = False
-        try:
-            if self.plugin_config is not None:
-                self.plugin_config["enabled"] = False
-                self.plugin_config.save_config()
-        except Exception as e:
-            logger.error(f"保存插件配置失败: {e}")
-        await self._persist_config()
+        self._persist_config()
         yield event.plain_result("已关闭偷表情包")
 
     @meme.command("auto_on")
     async def auto_on(self, event: AstrMessageEvent):
         """开启自动发送功能。"""
         self.auto_send = True
-        try:
-            if self.plugin_config is not None:
-                self.plugin_config["auto_send"] = True
-                self.plugin_config.save_config()
-        except Exception as e:
-            logger.error(f"保存插件配置失败: {e}")
-        await self._persist_config()
+        self._persist_config()
         yield event.plain_result("已开启自动发送")
 
     @meme.command("auto_off")
     async def auto_off(self, event: AstrMessageEvent):
         """关闭自动发送功能。"""
         self.auto_send = False
-        try:
-            if self.plugin_config is not None:
-                self.plugin_config["auto_send"] = False
-                self.plugin_config.save_config()
-        except Exception as e:
-            logger.error(f"保存插件配置失败: {e}")
-        await self._persist_config()
+        self._persist_config()
         yield event.plain_result("已关闭自动发送")
 
 
@@ -1162,13 +1150,7 @@ class StealerPlugin(Star):
             yield event.plain_result("请提供视觉模型的 provider_id")
             return
         self.vision_provider_id = provider_id
-        try:
-            if self.plugin_config is not None:
-                self.plugin_config["vision_provider_id"] = provider_id
-                self.plugin_config.save_config()
-        except Exception as e:
-            logger.error(f"保存插件配置失败: {e}")
-        await self._persist_config()
+        self._persist_config()
         yield event.plain_result(f"已设置视觉模型: {provider_id}")
 
     @meme.command("set_text")
@@ -1177,13 +1159,7 @@ class StealerPlugin(Star):
             yield event.plain_result("请提供主回复文本模型的 provider_id")
             return
         self.text_provider_id = provider_id
-        try:
-            if self.plugin_config is not None:
-                self.plugin_config["text_provider_id"] = provider_id
-                self.plugin_config.save_config()
-        except Exception as e:
-            logger.error(f"保存插件配置失败: {e}")
-        await self._persist_config()
+        self._persist_config()
         yield event.plain_result(f"已设置文本模型: {provider_id}")
 
     @meme.command("show_providers")
@@ -1199,23 +1175,11 @@ class StealerPlugin(Star):
         """切换是否仅偷取表情包模式。"""
         if enable.lower() in ["on", "开启", "true"]:
             self.emoji_only = True
-            try:
-                if self.plugin_config is not None:
-                    self.plugin_config["emoji_only"] = True
-                    self.plugin_config.save_config()
-            except Exception as e:
-                logger.error(f"保存插件配置失败: {e}")
-            await self._persist_config()
+            self._persist_config()
             yield event.plain_result("已开启仅偷取表情包模式")
         elif enable.lower() in ["off", "关闭", "false"]:
             self.emoji_only = False
-            try:
-                if self.plugin_config is not None:
-                    self.plugin_config["emoji_only"] = False
-                    self.plugin_config.save_config()
-            except Exception as e:
-                logger.error(f"保存插件配置失败: {e}")
-            await self._persist_config()
+            self._persist_config()
             yield event.plain_result("已关闭仅偷取表情包模式")
         else:
             status = "开启" if self.emoji_only else "关闭"
